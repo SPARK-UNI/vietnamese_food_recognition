@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Food Detection</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>🍜 Food Detection Demo</h1>
+
+    <!-- Upload ảnh + Drag & Drop -->
+    <div class="upload-section">
+      <input type="file" id="imageInput" accept="image/*" hidden>
+      <div id="dropZone">
+        <p>Kéo & thả ảnh vào đây hoặc bấm để chọn ảnh</p>
+      </div>
+    </div>
+
+    <!-- Webcam -->
+    <div class="webcam-section">
+      <button id="startCamBtn">Bật Webcam</button>
+      <video id="webcam" autoplay playsinline hidden></video>
+      <button id="captureBtn" hidden>📷 Capture</button>
+    </div>
+
+    <!-- Hiển thị ảnh đã chọn/chụp -->
+    <div class="preview">
+      <h2>Ảnh đã chọn/chụp:</h2>
+      <img id="previewImg" src="" alt="Preview sẽ hiển thị ở đây">
+      <button id="predictBtn" class="predict-btn">Predict</button>
+    </div>
+
+    <!-- Kết quả -->
+    <div class="result">
+      <h2>Kết quả:</h2>
+      <p id="prediction">Chưa có kết quả</p>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
