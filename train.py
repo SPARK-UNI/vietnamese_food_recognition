@@ -1,175 +1,170 @@
-import os, math, numpy as np, tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
-from sklearn.metrics import classification_report, confusion_matrix
-import tensorflow_addons as tfa
+# -*- coding: utf-8 -*-
+"""
+Train a simple CNN classifier (flowers/foods/anything in folders)
+- Input: data_dir/<class>/<image>
+- Split: train/val via validation_split
+- Exports to out_dir:
+    - food_cnn.h5 (best val_accuracy)
+    - labels.txt (exact class order)
+    - protocol.json (IMG_SIZE, color space, normalization, class_names, etc.)
+"""
 
-# ====== Cấu hình ======
-DATA_DIR = r"your_data_path"  # Thư mục data với cấu trúc: data_dir/class/images
-CLASSES = ['bun bo', 'com tam', 'hu tieu', 'my quang', 'pho']
-IMG_SIZE = 384                  
-BATCH_SIZE = 32                     
-EPOCHS_STAGE1 = 10
-EPOCHS_STAGE2 = 12
-EPOCHS_STAGE3 = 10
-SEED = 1337
-AUTO = tf.data.AUTOTUNE
-NUM_CLASSES = len(CLASSES)
+import argparse
+import json
+from pathlib import Path
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.callbacks import ModelCheckpoint
 
-# ====== Dataset loader với split trong-directory ======
-train_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    DATA_DIR,
-    labels='inferred',
-    label_mode='categorical',
-    class_names=CLASSES,
-    color_mode='rgb',
-    batch_size=BATCH_SIZE,
-    image_size=(IMG_SIZE, IMG_SIZE),
-    shuffle=True,
-    seed=SEED,
-    validation_split=0.2,
-    subset='training'
-)
-val_ds = tf.keras.preprocessing.image_dataset_from_directory(
-    DATA_DIR,
-    labels='inferred',
-    label_mode='categororical' if False else 'categorical',
-    class_names=CLASSES,
-    color_mode='rgb',
-    batch_size=BATCH_SIZE,
-    image_size=(IMG_SIZE, IMG_SIZE),
-    shuffle=False,
-    seed=SEED,
-    validation_split=0.2,
-    subset='validation'
-)
 
-# ====== Augmentations (mạnh để chống lệ thuộc "cái bát") ======
-data_aug = keras.Sequential([
-    layers.RandomFlip("horizontal"),
-    layers.RandomRotation(0.1, fill_mode="nearest"),
-    layers.RandomZoom(0.1),
-    layers.RandomTranslation(0.1, 0.1, fill_mode="nearest"),
-    layers.RandomContrast(0.25),
-    layers.GaussianNoise(0.05),
-    # Brightness/Saturation ngẫu nhiên giúp chống phụ thuộc ánh sáng/màu
-    layers.Lambda(lambda x: tf.image.random_brightness(x, 0.1)),
-    layers.Lambda(lambda x: tf.image.random_saturation(x, 0.7, 1.3)),
-], name="strong_aug")
+def enable_gpu_memory_growth():
+    gpus = tf.config.list_physical_devices('GPU')
+    for g in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(g, True)
+        except Exception:
+            pass
+    print(f"[INFO] GPUs detected: {len(gpus)}" if gpus else "[INFO] No GPU detected; running on CPU.")
 
-# ====== MixUp (giảm overfitting, tăng tính "khó") ======
-def sample_beta_distribution(size, alpha):
-    gamma_1 = tf.random.gamma(shape=[size], alpha=alpha)
-    gamma_2 = tf.random.gamma(shape=[size], alpha=alpha)
-    return gamma_1 / (gamma_1 + gamma_2)
 
-def mixup_batch(images, labels, alpha=0.2):
-    # images: (B,H,W,3), labels: (B,C)
-    batch_size = tf.shape(images)[0]
-    index = tf.random.shuffle(tf.range(batch_size))
-    shuffled_images = tf.gather(images, index)
-    shuffled_labels = tf.gather(labels, index)
+def build_cnn(input_shape, num_classes):
+    """Plain CNN with in-model normalization to lock protocol."""
+    model = models.Sequential([
+        layers.Input(shape=input_shape),
+        # Keep normalization INSIDE the model so inference doesn't need to guess
+        layers.Rescaling(1./255),
 
-    lam = sample_beta_distribution(batch_size, alpha)  # (B,)
-    lam_x = tf.reshape(lam, (batch_size, 1, 1, 1))
-    lam_y = tf.reshape(lam, (batch_size, 1))
+        layers.Conv2D(32, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
 
-    mixed_images = images * lam_x + shuffled_images * (1.0 - lam_x)
-    mixed_labels = labels * lam_y + shuffled_labels * (1.0 - lam_y)
-    return mixed_images, mixed_labels
+        layers.Conv2D(64, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
 
-# ====== Preprocess theo EfficientNetV2 ======
-from tensorflow.keras.applications.efficientnet_v2 import preprocess_input
+        layers.Conv2D(128, 3, padding='same', activation='relu'),
+        layers.MaxPooling2D(),
 
-def train_map(images, labels):
-    images = tf.cast(images, tf.float32)  # 0..255
-    images = data_aug(images)
-    # 50% batch dùng MixUp (có thể tăng lên 0.7 nếu vẫn overfit)
-    images, labels = tf.cond(
-        tf.random.uniform(()) < 0.5,
-        lambda: mixup_batch(images, labels, alpha=0.2),
-        lambda: (images, labels)
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(num_classes, activation='softmax')
+    ])
+    return model
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_dir", type=str, default=r"your_dataset",
+                        help="Dataset folder with structure: data_dir/class/images")
+    parser.add_argument("--out_dir", type=str, default="./artifacts",
+                        help="Where to save model + labels + protocol")
+    parser.add_argument("--img_size", type=int, default=224)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--val_split", type=float, default=0.2)
+    parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    args = parser.parse_args()
+
+    enable_gpu_memory_growth()
+
+    data_dir = Path(args.data_dir)
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Data dir not found: {data_dir}")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load datasets
+    train_ds = tf.keras.utils.image_dataset_from_directory(
+        data_dir,
+        validation_split=args.val_split,
+        subset="training",
+        seed=args.seed,
+        image_size=(args.img_size, args.img_size),
+        batch_size=args.batch_size,
+        shuffle=True,
+        color_mode='rgb',
+        label_mode='int'
     )
-    images = preprocess_input(images)     # [-1,1]
-    return images, labels
+    val_ds = tf.keras.utils.image_dataset_from_directory(
+        data_dir,
+        validation_split=args.val_split,
+        subset="validation",
+        seed=args.seed,
+        image_size=(args.img_size, args.img_size),
+        batch_size=args.batch_size,
+        shuffle=False,
+        color_mode='rgb',
+        label_mode='int'
+    )
 
-def val_map(images, labels):
-    images = preprocess_input(tf.cast(images, tf.float32))
-    return images, labels
+    class_names = train_ds.class_names
+    num_classes = len(class_names)
+    print("[INFO] Classes:", class_names)
 
-train_ds = train_ds.map(train_map, num_parallel_calls=AUTO).prefetch(AUTO)
-val_ds   = val_ds.map(val_map,   num_parallel_calls=AUTO).prefetch(AUTO)
+    AUTOTUNE = tf.data.AUTOTUNE
+    train_ds = train_ds.prefetch(AUTOTUNE)
+    val_ds = val_ds.prefetch(AUTOTUNE)
 
-# ====== Model: EfficientNetV2S + head được regularize ======
-base = tf.keras.applications.EfficientNetV2S(
-    include_top=False, weights='imagenet',
-    input_shape=(IMG_SIZE, IMG_SIZE, 3), pooling='avg'
-)
-base.trainable = False
+    # Build + compile model
+    model = build_cnn((args.img_size, args.img_size, 3), num_classes)
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(args.lr),
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+    model.summary()
 
-inputs = keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
-x = base(inputs, training=False)
-x = layers.BatchNormalization()(x)
-x = layers.Dropout(0.3)(x)
-x = layers.Dense(256, activation='swish',
-                 kernel_regularizer=keras.regularizers.l2(1e-4))(x)
-x = layers.BatchNormalization()(x)
-x = layers.Dropout(0.4)(x)
-outputs = layers.Dense(NUM_CLASSES, activation='softmax')(x)
-model = keras.Model(inputs, outputs)
+    # Save best model
+    model_path = out_dir / "food_cnn.h5"
+    checkpoint_cb = ModelCheckpoint(
+        str(model_path),
+        monitor="val_accuracy",
+        mode="max",
+        save_best_only=True,
+        verbose=1
+    )
 
-# ====== Optimizers, losses, callbacks ======
-loss = keras.losses.CategoricalCrossentropy(label_smoothing=0.1)
-opt1 = tfa.optimizers.AdamW(learning_rate=3e-4, weight_decay=1e-4)
+    # Train
+    print("[INFO] Training…")
+    history = model.fit(
+        train_ds,
+        validation_data=val_ds,
+        epochs=args.epochs,
+        callbacks=[checkpoint_cb]
+    )
 
-callbacks = [
-    keras.callbacks.EarlyStopping(
-        monitor="val_loss", patience=7, restore_best_weights=True
-    ),
-    keras.callbacks.ModelCheckpoint(
-        "food5_best.h5", monitor="val_loss", save_best_only=True
-    ),
-    keras.callbacks.ReduceLROnPlateau(
-        monitor="val_loss", factor=0.5, patience=3, verbose=1, min_lr=1e-6
-    ),
-]
+    # Evaluate final
+    val_loss, val_acc = model.evaluate(val_ds, verbose=0)
+    print(f"[RESULT] Final val_acc={val_acc:.4f}  val_loss={val_loss:.4f}")
 
-model.compile(optimizer=opt1, loss=loss, metrics=["accuracy"])
-print(model.summary())
+    # Export labels.txt
+    labels_path = out_dir / "labels.txt"
+    with labels_path.open("w", encoding="utf-8") as f:
+        for name in class_names:
+            f.write(name + "\n")
+    print(f"[INFO] Saved labels to: {labels_path}")
 
-# ====== Stage 1: train head ======
-model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS_STAGE1, callbacks=callbacks)
+    # Export protocol.json
+    protocol = {
+        "version": 1,
+        "framework": "tf.keras",
+        "model_file": model_path.name,
+        "img_size": [args.img_size, args.img_size],
+        "channels": 3,
+        "color_space": "RGB",
+        "rescaling_in_model": True,  
+        "class_names": class_names,
+        "val_split": args.val_split,
+        "seed": args.seed
+    }
+    protocol_path = out_dir / "protocol.json"
+    with protocol_path.open("w", encoding="utf-8") as f:
+        json.dump(protocol, f, ensure_ascii=False, indent=2)
+    print(f"[INFO] Saved protocol to: {protocol_path}")
 
-# ====== Stage 2: unfreeze ~40% cuối của backbone ======
-base.trainable = True
-n = len(base.layers)
-for i, layer in enumerate(base.layers):
-    layer.trainable = (i >= int(n*0.60))  # freeze 60% đầu
+    print(f"[DONE] Best model: {model_path}")
 
-opt2 = tfa.optimizers.AdamW(learning_rate=5e-5, weight_decay=5e-5)
-model.compile(optimizer=opt2, loss=loss, metrics=["accuracy"])
-model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS_STAGE2, callbacks=callbacks)
 
-# ====== Stage 3: unfreeze toàn bộ (LR rất thấp) ======
-for layer in base.layers:
-    layer.trainable = True
-
-opt3 = tfa.optimizers.AdamW(learning_rate=1e-5, weight_decay=1e-5)
-model.compile(optimizer=opt3, loss=loss, metrics=["accuracy"])
-model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS_STAGE3, callbacks=callbacks)
-
-# ====== Đánh giá chi tiết trên validation ======
-# (sử dụng val_ds gốc trước preprocess để lấy y_true chính xác theo thứ tự)
-# Ở đây chúng ta dùng val_ds đã map preprocess nên cần thu y_true/y_pred sau predict.
-y_true = []
-for _, y in val_ds:
-    y_true.append(y.numpy())
-y_true = np.concatenate(y_true, axis=0).argmax(axis=1)
-
-y_pred = model.predict(val_ds).argmax(axis=1)
-
-print("\nClassification report:")
-print(classification_report(y_true, y_pred, target_names=CLASSES, digits=4))
-
-print("\nConfusion matrix:")
-print(confusion_matrix(y_true, y_pred))
+if __name__ == "__main__":
+    main()
