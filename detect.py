@@ -1,19 +1,17 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, render_template
 import cv2
 import numpy as np
 import base64
-import os
-import tensorflow as tf
 from tensorflow.keras.models import load_model
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="static", template_folder="templates")
 
 # ================================
 # Load model và labels
 # ================================
-MODEL_PATH = "food_ann.h5"
-LABELS_PATH = "labels.txt"
-IMG_SIZE = (224, 224)  # Teachable Machine thường dùng 224x224
+MODEL_PATH = r"your_model_path"
+LABELS_PATH = r"labels.txt" 
+IMG_SIZE = (224, 224)
 
 print("🔄 Loading model...")
 try:
@@ -35,11 +33,9 @@ except Exception as e:
 # ================================
 def predict_image(image_data: str):
     try:
-        # Xóa prefix base64 nếu có
         if ',' in image_data:
             image_data = image_data.split(',')[1]
 
-        # Decode base64 → numpy
         image_bytes = base64.b64decode(image_data)
         nparr = np.frombuffer(image_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -47,19 +43,16 @@ def predict_image(image_data: str):
         if frame is None:
             return "Invalid image"
 
-        # Resize & normalize
         img = cv2.resize(frame, IMG_SIZE)
         img = img.astype("float32") / 255.0
-        img = np.expand_dims(img, axis=0)  # (1,224,224,3)
+        img = np.expand_dims(img, axis=0)
 
-        # Predict
         pred = model.predict(img)
         class_idx = np.argmax(pred, axis=1)[0]
         confidence = float(np.max(pred))
 
-        # Lấy nhãn
         if 0 <= class_idx < len(labels):
-            result = labels[class_idx].split(' ', 1)[-1]
+            result = labels[class_idx]
             return f"{result} ({confidence:.2f})"
         else:
             return f"Unknown ({confidence:.2f})"
@@ -71,44 +64,21 @@ def predict_image(image_data: str):
 # ================================
 # Routes
 # ================================
-
-@app.route('/')
+@app.route("/")
 def index():
-    return send_from_directory('.', 'index.html')
+    return render_template("index.html")
 
-@app.route('/style.css')
-def css():
-    return send_from_directory('.', 'style.css')
-
-@app.route('/script.js')
-def js():
-    return send_from_directory('.', 'script.js')
-
-@app.route('/<path:filename>')
-def static_files(filename):
-    return send_from_directory('.', filename)
-
-@app.route('/predict', methods=['POST', 'OPTIONS'])
+@app.route("/predict", methods=["POST"])
 def predict():
-    if request.method == 'OPTIONS':  # CORS preflight
-        response = jsonify({})
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
-        response.headers.add('Access-Control-Allow-Methods', 'POST')
-        return response
-
     if model is None or not labels:
-        response = jsonify({'prediction': 'Model not loaded', 'error': True})
-    else:
-        data = request.get_json()
-        if not data or 'image' not in data:
-            response = jsonify({'prediction': 'No image provided', 'error': True})
-        else:
-            prediction = predict_image(data['image'])
-            response = jsonify({'prediction': prediction, 'error': False})
+        return jsonify({'prediction': 'Model not loaded', 'error': True})
 
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    return response
+    data = request.get_json()
+    if not data or 'image' not in data:
+        return jsonify({'prediction': 'No image provided', 'error': True})
+
+    prediction = predict_image(data['image'])
+    return jsonify({'prediction': prediction, 'error': False})
 
 
 # ================================
@@ -116,5 +86,4 @@ def predict():
 # ================================
 if __name__ == '__main__':
     print("🚀 Starting API...")
-    print("Server running at: http://127.0.0.1:5000")
     app.run(debug=True, host='127.0.0.1', port=5000)

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>🍲 Vietnamese Food Recognition</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="container">
+    <h1>🍜 Vietnamese Food Recognition</h1>
+
+    <!-- Upload ảnh -->
+    <input type="file" id="fileInput" accept="image/*">
+    <button id="uploadBtn">Predict</button>
+
+    <!-- Camera -->
+    <button id="cameraBtn">Open Camera</button>
+    <video id="camera" autoplay></video>
+    <button id="captureBtn" style="display:none;">Capture</button>
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <!-- Hiển thị ảnh -->
+    <div id="preview"></div>
+
+    <!-- Kết quả -->
+    <div id="result"></div>
+  </div>
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
